@@ -1,50 +1,25 @@
 package main
 
 import (
-	"beethoven/internal/config"
-	"beethoven/internal/gemini"
-	"bytes"
+	"beethoven/internal/chat"
 	"fmt"
-	"io"
-	"log"
-	"net/http"
+	"os"
 
-	"github.com/joho/godotenv"
+	tea "charm.land/bubbletea/v2"
 )
 
 func main() {
-	godotenv.Load("../.env")
 
-	payload, err := gemini.EncodePayload("ola")
-
+	f, err := tea.LogToFile("debug.log", "debug")
 	if err != nil {
-		log.Fatal(err)
+		fmt.Println("fatal:", err)
+		os.Exit(1)
 	}
+	defer f.Close()
 
-	b, err := Fetch(payload)
+	model := chat.InitialModel()
+	p := tea.NewProgram(model)
 
-	if err != nil {
-		log.Fatal(err)
-	}
+	p.Run()
 
-	fmt.Printf("%s", b)
-}
-
-func Fetch(payload *bytes.Buffer) ([]byte, error) {
-
-	url := config.Load()
-
-	res, err := http.Post(url, "application/json", payload)
-
-	if err != nil {
-		return nil, err
-	}
-
-	b, err := io.ReadAll(res.Body)
-
-	if err != nil {
-		return nil, err
-	}
-
-	return b, nil
 }

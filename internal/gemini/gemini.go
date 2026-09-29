@@ -1,9 +1,12 @@
 package gemini
 
 import (
+	"beethoven/internal/config"
 	"bytes"
 	"encoding/json"
+	"io"
 	"log"
+	"net/http"
 )
 
 type Response struct {
@@ -63,4 +66,40 @@ func DecodePayload(p []byte) (Response, error) {
 	}
 
 	return response, nil
+}
+
+func Gemini(text string) (Response, error) {
+	payload, err := EncodePayload(text)
+
+	if err != nil {
+		return Response{}, err
+	}
+
+	url := config.Load(".")
+
+	b, err := Fetch(url, payload)
+
+	if err != nil {
+		return Response{}, err
+	}
+
+	return DecodePayload(b)
+}
+
+// not the place for this, but fuck it
+func Fetch(url string, payload *bytes.Buffer) ([]byte, error) {
+
+	res, err := http.Post(url, "application/json", payload)
+
+	if err != nil {
+		return nil, err
+	}
+
+	b, err := io.ReadAll(res.Body)
+
+	if err != nil {
+		return nil, err
+	}
+
+	return b, nil
 }

@@ -19,17 +19,11 @@ type model struct {
 	viewport    viewport.Model
 	senderStyle lipgloss.Style
 	llmStyle    lipgloss.Style
+	history     *History
 	err         error
 }
-type memory struct {
-	chat []gemini.Response
-}
 
-func (m *memory) addMsg(msg gemini.Response) {
-
-}
-
-func InitialModel() model {
+func InitialModel(history *History) model {
 
 	ta := textarea.New()
 
@@ -53,7 +47,7 @@ func InitialModel() model {
 	ta.ShowLineNumbers = false
 
 	vp := viewport.New(viewport.WithWidth(30), viewport.WithHeight(5))
-	vp.SetContent("Alo")
+	vp.SetContent("Chat with LLM")
 
 	vp.KeyMap.Left.SetEnabled(false)
 	vp.KeyMap.Right.SetEnabled(false)
@@ -66,6 +60,7 @@ func InitialModel() model {
 		viewport:    vp,
 		senderStyle: lipgloss.NewStyle().Foreground(lipgloss.Color("5")),
 		llmStyle:    lipgloss.NewStyle().Foreground(lipgloss.Color("10")),
+		history:     history,
 		err:         nil,
 	}
 }
@@ -81,10 +76,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// tratar erro
 			return m, nil
 		}
+		render := m.llmStyle.Render("Gemini: ") + msg.text
+
+		m.history.addMsg(render)
 
 		m.messages = append(
 			m.messages,
-			m.llmStyle.Render("Gemini: ")+msg.text,
+			render,
 		)
 
 		m.viewport.SetContent(
@@ -113,11 +111,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case "enter", "ctrl+j":
 			text := m.textarea.Value()
-			m.messages = append(m.messages, m.senderStyle.Render("You: ")+text)
+
+			render := m.senderStyle.Render("You: ") + text
+
+			m.history.addMsg(render)
+			m.messages = append(m.messages, render)
+
 			m.viewport.SetContent(lipgloss.NewStyle().Width(m.viewport.Width()).Render(strings.Join(m.messages, "\n")))
 			m.textarea.Reset()
 			m.viewport.GotoBottom()
-			return m, sendRequest(text)
+			return m, sendRequest(m, text)
 		default:
 			// Send all other keypresses to the textarea.
 			var cmd tea.Cmd
@@ -152,14 +155,16 @@ type ResponseMsg struct {
 	err  error
 }
 
-func sendRequest(text string) tea.Cmd {
+func sendRequest(m model, text string) tea.Cmd {
 	return func() tea.Msg {
 		if len(text) == 0 {
 			log.Print("empty message")
 			return nil
 		}
 
-		response, err := gemini.Gemini(text)
+		response, err := gemini.Gemini(
+			fmt.Sprintf("history: %s\nLast message: %s", m.history.Messages, m.history.LastMsg),
+		)
 
 		if err != nil {
 			log.Fatal(err)
@@ -168,6 +173,7 @@ func sendRequest(text string) tea.Cmd {
 		return ResponseMsg{
 			text: response.Candidates[0].Content.Parts[0].Text,
 		}
+
 	}
 
 }

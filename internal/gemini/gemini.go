@@ -4,6 +4,7 @@ import (
 	"beethoven/internal/config"
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -14,18 +15,22 @@ type Response struct {
 }
 
 type Candidate struct {
-	Content      Content `json:"content"`
-	FinishReason string  `json:"finish_reason,omitempty"`
-	Index        int64   `json:"index,omitempty"`
+	Message      *Message `json:"content"`
+	FinishReason string   `json:"finish_reason,omitempty"`
+	Index        int64    `json:"index,omitempty"`
 }
 
 type Payload struct {
-	Contents []Content `json:"contents,omitempty"`
+	Contents []Message `json:"contents,omitempty"`
 }
 
-type Content struct {
+type Message struct {
 	Parts []Part `json:"parts,omitempty"`
 	Role  string `json:"role,omitempty"`
+}
+
+type Req struct {
+	Contents []*Message `json:"contents"`
 }
 
 type Part struct {
@@ -33,22 +38,10 @@ type Part struct {
 }
 
 // Encode payload to fetch the gemini's api endpoint
-func EncodePayload(text string) (*bytes.Buffer, error) {
+func EncodePayload(contents *Req) (*bytes.Buffer, error) {
 	payload := new(bytes.Buffer)
 
-	p := &Payload{
-		Contents: []Content{
-			{
-				Parts: []Part{
-					{
-						Text: text,
-					},
-				},
-			},
-		},
-	}
-
-	err := json.NewEncoder(payload).Encode(p)
+	err := json.NewEncoder(payload).Encode(contents)
 
 	if err != nil {
 		log.Fatal(err)
@@ -68,8 +61,13 @@ func DecodePayload(p []byte) (Response, error) {
 	return response, nil
 }
 
-func Gemini(text string) (Response, error) {
-	payload, err := EncodePayload(text)
+func GenerateContent(contents []*Message) (Response, error) {
+
+	req := &Req{
+		Contents: contents,
+	}
+
+	payload, err := EncodePayload(req)
 
 	if err != nil {
 		return Response{}, err
@@ -88,8 +86,25 @@ func Gemini(text string) (Response, error) {
 
 // not the place for this, but fuck it
 func Fetch(url string, payload *bytes.Buffer) ([]byte, error) {
+	p := make([]byte, payload.Len())
 
-	res, err := http.Post(url, "application/json", payload)
+	payload.Read(p)
+
+	bff := bytes.NewReader(p)
+
+	res, err := http.Post(url, "application/json", bff)
+
+	if res.StatusCode == http.StatusBadRequest {
+		defer res.Body.Close()
+
+		bBytes, err := io.ReadAll(res.Body)
+
+		if err != nil {
+			log.Printf("failed to read body of bad request: %v", err)
+		}
+
+		return nil, fmt.Errorf("bad request: %v\n json: %v", string(bBytes), string(p))
+	}
 
 	if err != nil {
 		return nil, err

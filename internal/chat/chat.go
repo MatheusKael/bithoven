@@ -1,10 +1,11 @@
 package chat
 
 import (
-	"beethoven/internal/gemini"
+	"context"
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	"charm.land/bubbles/v2/cursor"
 	"charm.land/bubbles/v2/textarea"
@@ -19,11 +20,13 @@ type model struct {
 	viewport    viewport.Model
 	senderStyle lipgloss.Style
 	llmStyle    lipgloss.Style
+	codeStyle   lipgloss.Style
 	history     *History
+	provider    Provider
 	err         error
 }
 
-func InitialModel(history *History) model {
+func InitialModel(p Provider, history *History) model {
 
 	ta := textarea.New()
 
@@ -54,19 +57,44 @@ func InitialModel(history *History) model {
 
 	ta.KeyMap.InsertNewline.SetEnabled(false)
 
-	return model{
+	m := model{
 		textarea:    ta,
 		messages:    []string{},
 		viewport:    vp,
 		senderStyle: lipgloss.NewStyle().Foreground(lipgloss.Color("5")),
 		llmStyle:    lipgloss.NewStyle().Foreground(lipgloss.Color("10")),
+		codeStyle:   lipgloss.NewStyle().Foreground(lipgloss.Color("14")).PaddingLeft(2),
 		history:     history,
+		provider:    p,
 		err:         nil,
 	}
+
+	for _, msg := range history.Messages {
+		switch msg.Role {
+		case RoleUser:
+			m.messages = append(m.messages, m.senderStyle.Render("You: ")+msg.Text())
+		case RoleAssistant:
+			m.messages = append(m.messages, renderAssistance(msg, p.Name(), m.llmStyle, m.codeStyle))
+		}
+	}
+
+	if len(m.messages) > 0 {
+		m.viewport.SetContent(
+			lipgloss.NewStyle().Width(m.viewport.Width()).Render(strings.Join(m.messages, "\n")),
+		)
+		m.viewport.GotoBottom()
+	}
+
+	return m
 }
 
 func (m model) Init() tea.Cmd {
 	return textarea.Blink
+}
+
+type ResponseMsg struct {
+	response Response
+	err      error
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -74,15 +102,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case ResponseMsg:
 		if msg.err != nil {
 			// tratar erro
+			m.err = msg.err
 			return m, nil
 		}
-		render := m.llmStyle.Render("Gemini: ") + msg.text
 
-		m.history.addMsg(render)
+		rendered := renderAssistance(msg.response.Message, m.provider.Name(), m.llmStyle, m.codeStyle)
 
 		m.messages = append(
 			m.messages,
-			render,
+			rendered,
 		)
 
 		m.viewport.SetContent(
@@ -112,15 +140,32 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "enter", "ctrl+j":
 			text := m.textarea.Value()
 
-			render := m.senderStyle.Render("You: ") + text
+			if strings.TrimSpace(text) == "" {
+				return m, nil
+			}
 
-			m.history.addMsg(render)
-			m.messages = append(m.messages, render)
+			userMsg := Message{
+				Role:  RoleUser,
+				Parts: []Part{{Kind: PartText, Text: text}},
+			}
 
-			m.viewport.SetContent(lipgloss.NewStyle().Width(m.viewport.Width()).Render(strings.Join(m.messages, "\n")))
+			if err := m.history.addMsg(userMsg); err != nil {
+				m.err = err
+				return m, nil
+			}
+
+			m.messages = append(m.messages, m.senderStyle.Render("You: ")+text)
 			m.textarea.Reset()
+			m.viewport.SetContent(
+				lipgloss.NewStyle().Width(m.viewport.Width()).
+					Render(strings.Join(m.messages, "\n")),
+			)
 			m.viewport.GotoBottom()
-			return m, sendRequest(m, text)
+
+			// snapshot! evita corrida entre goroutine da UI e a do Cmd
+			snapshot := m.history.Snapshot()
+
+			return m, sendRequest(m.provider, snapshot)
 		default:
 			// Send all other keypresses to the textarea.
 			var cmd tea.Cmd
@@ -139,6 +184,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) View() tea.View {
+	if m.err != nil {
+		log.Print(m.err)
+		v := tea.NewView("Error: " + m.err.Error() + "\n")
+		v.AltScreen = true
+		return v
+	}
+
 	viewportView := m.viewport.View()
 	v := tea.NewView(viewportView + "\n" + m.textarea.View())
 	c := m.textarea.Cursor()
@@ -147,33 +199,46 @@ func (m model) View() tea.View {
 	}
 	v.Cursor = c
 	v.AltScreen = true
+
 	return v
 }
 
-type ResponseMsg struct {
-	text string
-	err  error
-}
-
-func sendRequest(m model, text string) tea.Cmd {
+func sendRequest(provider Provider, history []Message) tea.Cmd {
 	return func() tea.Msg {
-		if len(text) == 0 {
-			log.Print("empty message")
-			return nil
-		}
+		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 
-		response, err := gemini.Gemini(
-			fmt.Sprintf("history: %s\nLast message: %s", m.history.Messages, m.history.LastMsg),
-		)
+		defer cancel()
 
-		if err != nil {
-			log.Fatal(err)
-		}
+		resp, err := provider.Generate(ctx, history)
 
 		return ResponseMsg{
-			text: response.Candidates[0].Content.Parts[0].Text,
+			response: resp,
+			err:      err,
+		}
+	}
+
+}
+
+func renderAssistance(m Message, name string, nameStyle, codeStyle lipgloss.Style) string {
+
+	var sb strings.Builder
+
+	sb.WriteString(nameStyle.Render(name + ": "))
+
+	for i, p := range m.Parts {
+
+		if i > 0 {
+			sb.WriteString("\n")
+		}
+		switch p.Kind {
+		case PartCode:
+
+			sb.WriteString(codeStyle.Render(p.Text))
+		case PartText:
+			sb.WriteString(p.Text)
 		}
 
 	}
 
+	return sb.String()
 }

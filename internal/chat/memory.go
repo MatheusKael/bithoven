@@ -1,6 +1,8 @@
 package chat
 
 import (
+	"bufio"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -8,50 +10,76 @@ import (
 )
 
 type History struct {
-	Messages []string
-	LastMsg  string
+	Messages []Message
 	File     *os.File
 }
 
-func (h *History) addMsg(msg string) {
-
-	if h.Messages == nil {
-		log.Fatal("forgot to initialize chat history")
-	}
-
-	err := h.write(msg)
+func (h *History) addMsg(msg Message) error {
+	b, err := json.Marshal(msg)
 
 	if err != nil {
-		log.Fatalf("failed to write history file: %v", err)
-	}
-	prevMsg := h.LastMsg
-	h.LastMsg = msg
-
-	h.Messages = append(h.Messages, prevMsg)
-}
-
-func (h *History) write(msg string) error {
-
-	if h.File == nil {
-		f, err := historyFile()
-
-		if err != nil {
-			return err
-		}
-		h.File = f
-	}
-	_, err := h.File.Write([]byte(msg + "\n"))
-
-	if err != nil {
+		log.Printf("failed to marshal: %v", err)
 		return err
 	}
 
+	b = append(b, '\n')
+
+	if _, err := h.File.Write(b); err != nil {
+		log.Printf("failed to write to file: %v", err)
+		return err
+	}
+
+	h.Messages = append(h.Messages, msg)
 	return nil
 }
 
-func historyFile() (*os.File, error) {
+func (h *History) Snapshot() []Message {
 
-	dir := "chathistory"
+	return append([]Message(nil), h.Messages...)
+}
+
+func (h *History) Close() error {
+
+	if h.File == nil {
+		return nil
+	}
+
+	return h.File.Close()
+}
+
+func (h *History) load() error {
+	if _, err := h.File.Seek(0, 0); err != nil {
+		return err
+	}
+	sc := bufio.NewScanner(h.File)
+
+	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for sc.Scan() {
+
+		line := sc.Bytes()
+
+		if len(line) == 0 {
+			continue
+		}
+		var m Message
+
+		if err := json.Unmarshal(line, &m); err != nil {
+			return err
+		}
+
+		h.Messages = append(h.Messages, m)
+	}
+
+	if err := sc.Err(); err != nil {
+		return err
+	}
+
+	_, err := h.File.Seek(0, 2)
+
+	return err
+}
+
+func OpenHistory(dir, filename string) (*History, error) {
 
 	err := os.MkdirAll(dir, 0o750)
 
@@ -59,8 +87,9 @@ func historyFile() (*os.File, error) {
 		return nil, err
 	}
 
-	path := filepath.Join(dir, "history.txt")
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	path := filepath.Join(dir, filename)
+
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o644)
 
 	if err != nil {
 
@@ -75,5 +104,12 @@ func historyFile() (*os.File, error) {
 		return nil, err
 	}
 
-	return f, nil
+	h := &History{File: f, Messages: []Message{}}
+
+	if err := h.load(); err != nil {
+		f.Close()
+		return nil, err
+	}
+
+	return h, nil
 }

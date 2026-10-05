@@ -2,7 +2,9 @@ package main
 
 import (
 	"beethoven/internal/chat"
+	"beethoven/internal/gemini"
 	"fmt"
+	"log"
 	"os"
 
 	tea "charm.land/bubbletea/v2"
@@ -17,7 +19,17 @@ func main() {
 	}
 	defer f.Close()
 
-	model := chat.InitialModel()
+	history, err := chat.OpenHistory("chathistory", "history.json1")
+
+	if err != nil {
+		log.Fatalf("failed to open history: %v", err)
+	}
+
+	c := &gemini.Client{
+		Model: "gemini",
+	}
+
+	model := chat.InitialModel(c, history)
 	p := tea.NewProgram(model)
 
 	p.Run()
